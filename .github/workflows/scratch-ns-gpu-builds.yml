@@ -1,0 +1,65 @@
+name: scratch ns gpu builds
+
+# Scratch (never merge): builds the engine verify suites and the real-capture
+# recording test for main and for pull requests merged into their base, so
+# they can run on rented NVIDIA and AMD GPU machines.
+
+on:
+  push:
+    branches: [scratch/ns-gpu-builds]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CAP_VERIFY_CARGO_PROFILE: ci-verify
+  CAP_VERIFY_NEXTEST_PROFILE: ci
+  CAP_VERIFY_LOCKED: "1"
+
+jobs:
+  windows:
+    name: windows ${{ matrix.ref }}
+    runs-on: blacksmith-8vcpu-windows-2025
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [main, "2940", "2999", "3300", "3279", "3223", "2838", "2807", "3134", "2301", "2865"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ matrix.ref == 'main' && 'main' || format('refs/pull/{0}/merge', matrix.ref) }}
+      - name: Setup
+        uses: ./.github/actions/engine-verify-setup
+        with:
+          target: x86_64-pc-windows-msvc
+          tier: full
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/pack"
+          mkdir -p "$out/bin"
+          git rev-parse HEAD > "$out/sha.txt"
+          scripts/verify/run.sh full --archive "$out/verify.tar.zst"
+          cargo build --locked --profile ci-verify -p cap-verify-stimulus
+          cargo test --locked --profile ci-verify -p cap-verify --test recording --no-run --message-format json \
+            | python -c 'import json,sys
+          for line in sys.stdin:
+              try: m = json.loads(line)
+              except ValueError: continue
+              if m.get("reason") == "compiler-artifact" and m.get("target", {}).get("name") == "recording" and m.get("executable"):
+                  print(m["executable"])' > "$out/recording-exe.txt"
+          cp "$(cat "$out/recording-exe.txt")" "$out/bin/recording.exe"
+          cp target/ci-verify/cap-verify-stimulus.exe "$out/bin/"
+          cp "$(command -v cargo-nextest)" "$out/bin/"
+          cp -r target/native-deps "$out/native-deps"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: win-${{ matrix.ref }}
+          path: ${{ runner.temp }}/pack
+          retention-days: 3
+          compression-level: 1
