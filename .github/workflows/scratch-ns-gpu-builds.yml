@@ -26,12 +26,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ref: ["2854", "2807", "2838"]
+        ref: ["2854"]
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          ref: ${{ matrix.ref == 'main' && 'main' || format('refs/pull/{0}/merge', matrix.ref) }}
+          ref: ${{ matrix.ref == 'main' && 'main' || format('refs/pull/{0}/head', matrix.ref) }}
       - name: Setup
         uses: ./.github/actions/engine-verify-setup
         with:
