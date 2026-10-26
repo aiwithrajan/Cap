@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ref: [main, "3146", "3317", "3292", "2755", "3104", "2807", "2838", "2854"]
+        ref: ["2854", "2807", "2838"]
     steps:
       - uses: actions/checkout@v4
         with:
