@@ -1,0 +1,46 @@
+name: scratch ns crash report probe
+on:
+  push:
+    branches: [scratch/ns-crash-report-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: blacksmith-6vcpu-macos-15
+    steps:
+      - name: Mark crash report start
+        shell: bash
+        run: touch "$RUNNER_TEMP/crash-reports-since"
+      - name: Crash a process
+        shell: bash
+        run: |
+          cat > /tmp/segv.c <<'C'
+          int main(void) { volatile int *p = (int *)0; return *p; }
+          C
+          cc -g -o /tmp/segv /tmp/segv.c
+          /tmp/segv; echo "exit $?"; sleep 5; exit 1
+      - name: Collect macOS crash reports
+        id: crash-reports
+        if: ${{ failure() && runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          dest="$RUNNER_TEMP/crash-reports"
+          for dir in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            [[ -d "$dir" ]] || continue
+            { find "$dir" -type f \( -name '*.ips' -o -name '*.crash' \) -newer "$RUNNER_TEMP/crash-reports-since" -print0 2>/dev/null || true; } |
+              while IFS= read -r -d '' report; do
+                mkdir -p "$dest"
+                cp "$report" "$dest/" && echo "collected $report" || echo "could not copy $report"
+              done
+          done
+          if [[ -n "$(ls -A "$dest" 2>/dev/null)" ]]; then
+            echo "collected=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload macOS crash reports
+        if: ${{ failure() && steps.crash-reports.outputs.collected == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gpui-patch-tests-crash-reports
+          path: ${{ runner.temp }}/crash-reports
+          retention-days: 14
