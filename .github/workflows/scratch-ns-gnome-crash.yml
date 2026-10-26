@@ -14,7 +14,7 @@ env:
 jobs:
   probe:
     runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
@@ -39,32 +39,43 @@ jobs:
       - run: |
           curl --fail --location --retry 3 -o "$RUNNER_TEMP/cap.deb" "$CAP_DEB_URL"
           echo "$CAP_DEB_SHA256  $RUNNER_TEMP/cap.deb" | sha256sum --check
-      - name: Loop the GNOME screenshot scenario, layer on and off, under gdb
+      - name: Loop the GNOME screenshot and export scenarios, layer on and off, with core dumps
         env:
           DEV_BIN: ${{ github.workspace }}/apps/desktop-gpui/target/debug/cap-gpui
           DEV_LIBS: ${{ github.workspace }}/target/native-deps/lib
-          SCENARIO: screenshot
         run: |
           set +e
-          for i in $(seq 10); do
+          sudo sysctl -w kernel.core_pattern='/out/core.%e.%p'
+          sudo sysctl -w fs.suid_dumpable=2
+          summary="$RUNNER_TEMP/summary.txt"
+          for i in $(seq 8); do
             for variant in layer nolayer; do
-              out="$RUNNER_TEMP/out/$variant-$i"
-              extra=()
-              [[ $variant == nolayer ]] && extra=(VK_LOADER_LAYERS_DISABLE=VK_LAYER_MESA_device_select)
-              sudo -E bash scripts/linux-desktop-harness/run-desktop.sh gnome "$RUNNER_TEMP/cap.deb" \
-                "$out" LAUNCH=dock GNOME_UNSAFE=1 CAP_GDB=1 "${extra[@]}" >/dev/null 2>&1
-              alive=$(grep -o "cap_alive=.*" "$out/result.txt" 2>/dev/null)
-              stop=$(grep -c GDBSTOP "$out/cap.log" 2>/dev/null)
-              echo "$variant $i $alive gdbstop=$stop $(grep -o 'screenshot_taken=.*' "$out/result.txt" 2>/dev/null)" | tee -a "$RUNNER_TEMP/out/summary.txt"
-              if [[ $stop -gt 0 ]]; then
-                sed -E 's/\x1b\[[0-9;]*m//g' "$out/cap.log" | grep -A80 "received signal" | head -120
-              fi
+              for scenario in screenshot export; do
+                out="$RUNNER_TEMP/out/$variant-$scenario-$i"
+                extra=()
+                [[ $variant == nolayer ]] && extra=(VK_LOADER_LAYERS_DISABLE=VK_LAYER_MESA_device_select)
+                name=$(SCENARIO=$scenario KEEP_CONTAINER=1 sudo -E bash scripts/linux-desktop-harness/run-desktop.sh gnome "$RUNNER_TEMP/cap.deb" \
+                  "$out" LAUNCH=dock GNOME_UNSAFE=1 "${extra[@]}" 2>/dev/null | sed -n 's/^kept container //p')
+                crash=$(grep -h "native crash" "$out"/profile/logs/cap-gpui.log.crashes 2>/dev/null | head -1)
+                core=$(ls "$out"/core.* 2>/dev/null | head -1)
+                echo "$variant $scenario $i crash=[${crash}] core=${core:+yes}" | tee -a "$summary"
+                if [[ -n $core && -n $name ]]; then
+                  sudo docker exec "$name" gdb -q -batch -ex "set pagination off" -ex "bt 40" -ex "info sharedlibrary" \
+                    /dev-bin/cap-gpui "/out/$(basename "$core")" 2>&1 | grep -vE "^\[New LWP|^warning:" | head -90 | tee "$out/backtrace.txt"
+                fi
+                [[ -n $name ]] && sudo docker rm -f "$name" >/dev/null 2>&1
+              done
             done
           done
-          echo ======; cat "$RUNNER_TEMP/out/summary.txt"
+          echo =====; cat "$summary"
+          echo "layer crashes: $(grep -c '^layer .*native crash' "$summary") of $(grep -c '^layer ' "$summary")"
+          echo "nolayer crashes: $(grep -c '^nolayer .*native crash' "$summary") of $(grep -c '^nolayer ' "$summary")"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: gnome-crash-probe
-          path: ${{ runner.temp }}/out
+          path: |
+            ${{ runner.temp }}/summary.txt
+            ${{ runner.temp }}/out/*/backtrace.txt
+            ${{ runner.temp }}/out/*/profile/logs/*
           retention-days: 3

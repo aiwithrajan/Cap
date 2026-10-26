@@ -24,6 +24,9 @@ if [[ ! -f "$profile/store" ]]; then
 }
 JSON
 fi
+# Probe only: let a native crash leave a core file (core_pattern is set on
+# the host to /out/core.*).
+ulimit -c unlimited
 gdb_prefix=()
 if [[ -n ${CAP_GDB:-} ]]; then
   gdb_prefix=(gdb -q -batch -ex "set pagination off"
